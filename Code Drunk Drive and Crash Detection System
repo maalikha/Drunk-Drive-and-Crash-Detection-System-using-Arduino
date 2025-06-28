@@ -1,0 +1,148 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <SoftwareSerial.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Use 0x3F if needed
+
+const int mq3Pin = A0;
+const int xPin = A1;
+const int yPin = A2;
+const int zPin = A3;
+
+const int buzzerPin = 7;
+const int redLed = 6;
+const int greenLed = 5;
+const int enginePin = 4;
+
+SoftwareSerial gsm(9, 10); // RX, TX for GSM module
+
+float baselineX = 0, baselineY = 0, baselineZ = 0;
+bool alertTriggered = false;
+unsigned long alertTime = 0;
+const unsigned long resetDelay = 5000;
+
+void sendSMS(String message) {
+  gsm.println("AT+CMGF=1");  // Set SMS text mode
+  delay(100);
+  gsm.println("AT+CMGS=\"+91xxxxxxxxxx\"");  // Replace with recipient number
+  delay(200);
+  gsm.print(message);
+  delay(100);
+  gsm.write(26); // Ctrl+Z to send
+  delay(3000);
+}
+
+void setup() {
+  lcd.init();
+  lcd.backlight();
+
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(redLed, OUTPUT);
+  pinMode(greenLed, OUTPUT);
+  pinMode(enginePin, OUTPUT);
+
+  digitalWrite(greenLed, HIGH);
+  digitalWrite(redLed, LOW);
+  digitalWrite(buzzerPin, LOW);
+  digitalWrite(enginePin, HIGH); // Engine ON
+
+  lcd.setCursor(0, 0);
+  lcd.print("System Started");
+  lcd.setCursor(0, 1);
+  lcd.print("DRUNK DRIVING");
+  delay(2000);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("AND CRASH ALERT");
+  lcd.setCursor(0, 1);
+  lcd.print("SYSTEM");
+  delay(2000);
+  lcd.clear();
+
+  // GSM Init
+  gsm.begin(9600);
+  delay(2000);
+
+  // Calibrate baseline for ADXL335
+  long sumX = 0, sumY = 0, sumZ = 0;
+  for (int i = 0; i < 100; i++) {
+    sumX += analogRead(xPin);
+    sumY += analogRead(yPin);
+    sumZ += analogRead(zPin);
+    delay(10);
+  }
+  baselineX = sumX / 100.0;
+  baselineY = sumY / 100.0;
+  baselineZ = sumZ / 100.0;
+}
+
+void loop() {
+  int alcoholValue = analogRead(mq3Pin);
+  float x = analogRead(xPin);
+  float y = analogRead(yPin);
+  float z = analogRead(zPin);
+
+  float deltaX = x - baselineX;
+  float deltaY = y - baselineY;
+  float deltaZ = z - baselineZ;
+
+  bool alcoholDetected = alcoholValue > 600;
+  bool accidentDetected = abs(deltaX) > 80 || abs(deltaY) > 80 || abs(deltaZ) > 80;
+
+  String direction = "";
+
+  if (accidentDetected) {
+    if (deltaX > 80) direction = "Right Accident";
+    else if (deltaX < -60) direction = "Left Accident";
+    else if (deltaY > 60) direction = "Front Accident";
+    else if (deltaY < -60) direction = "Back Accident";
+    else direction = "Accident Detected";
+  }
+
+  if ((alcoholDetected || accidentDetected) && !alertTriggered) {
+    alertTriggered = true;
+    alertTime = millis();
+
+    digitalWrite(enginePin, LOW); // Turn off engine
+    digitalWrite(greenLed, LOW);
+    digitalWrite(redLed, HIGH);
+    digitalWrite(buzzerPin, HIGH);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    if (alcoholDetected) {
+      lcd.print("Alcohol Detected");
+      sendSMS("ALERT: Alcohol level high! Driving is unsafe.");
+    } else {
+      lcd.print(direction);
+      sendSMS("ALERT: " + direction + " has occurred!");
+    }
+  }
+
+  if (alertTriggered && millis() - alertTime >= resetDelay) {
+    alertTriggered = false;
+
+    digitalWrite(enginePin, HIGH);
+    digitalWrite(greenLed, HIGH);
+    digitalWrite(redLed, LOW);
+    digitalWrite(buzzerPin, LOW);
+
+    lcd.clear();
+  }
+
+  if (!alertTriggered) {
+    lcd.setCursor(0, 0);
+    lcd.print("Alcohol: ");
+    lcd.print(alcoholValue);
+    lcd.print("     ");
+
+    lcd.setCursor(0, 1);
+    if (alcoholValue > 600) {
+      lcd.print("Status: Not Safe ");
+    } else {
+      lcd.print("Status: Safe     ");
+    }
+  }
+
+  delay(500);
+}
